@@ -5,10 +5,25 @@
 
 ## 快速上手（3 分钟）
 
+### Windows（推荐）
+
+1. 进入仓库根目录，执行初始化（自动创建 `.venv` 并安装依赖）
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
+```
+
+2. 一键启动 UI
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start.ps1
+```
+
+### 通用命令行方式（Linux/macOS/Windows）
+
 1. 安装依赖
 
 ```bash
-cd /home/dingqh/workspace/BidKing
 pip install -r requirements.txt
 ```
 

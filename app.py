@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 
 import streamlit as st
 
@@ -7,7 +8,7 @@ from src.data_loader import (
     load_price_pools,
 )
 from src.models import GradeGridTotalClue, PriceAvgClue, SolverConstraints
-from src.simulator import run_monte_carlo
+from src.simulator import CalculationCancelledError, run_monte_carlo
 from src.solver import solve_valid_combinations
 
 
@@ -41,6 +42,10 @@ def _init_state() -> None:
         st.session_state.global_grid_total_clues = []
     if "exact_count_clues" not in st.session_state:
         st.session_state.exact_count_clues = []
+    if "calc_cancel_requested" not in st.session_state:
+        st.session_state.calc_cancel_requested = False
+    if "calc_running" not in st.session_state:
+        st.session_state.calc_running = False
 
 
 def _grade_name(grade: int) -> str:
@@ -49,39 +54,58 @@ def _grade_name(grade: int) -> str:
 
 _init_state()
 with st.sidebar:
-    st.subheader("数据与线索")
+    st.subheader("全局设置")
     data_dir = st.text_input("数据目录", value=default_data_dir)
-    grid_size_options = {}
-    grid_size_err = None
-    try:
-        grid_size_options = get_grid_size_options(data_dir)
-    except Exception as exc:
-        grid_size_err = str(exc)
+    st.caption("输入区已移动到主区域，右侧为当前线索与模拟参数。")
 
-    total_count = st.number_input("第1轮: 总数量 N_total", min_value=1, value=20, step=1)
+grid_size_options = {}
+grid_size_err = None
+try:
+    grid_size_options = get_grid_size_options(data_dir)
+except Exception as exc:
+    grid_size_err = str(exc)
 
-    use_gw = st.checkbox("启用第5轮线索 (N_G + N_W)", value=False)
-    gw_count = st.number_input("第5轮: N_GW", min_value=0, value=0, step=1, disabled=not use_gw)
+st.markdown("## 输入与配置")
+main_left, main_right = st.columns([2, 1], gap="large")
+
+with main_left:
+    st.markdown("### 基础线索")
+    basic_col_1, basic_col_2 = st.columns(2)
+    with basic_col_1:
+        total_count = st.number_input("第1轮: 总数量 N_total", min_value=1, value=20, step=1)
+    with basic_col_2:
+        use_gw = st.checkbox("启用第5轮线索 (N_G + N_W)", value=False)
+        gw_count = st.number_input("第5轮: N_GW", min_value=0, value=0, step=1, disabled=not use_gw)
 
     st.markdown("### 第2/3/4轮平均格数线索")
-    use_o = st.checkbox("启用橙色平均格数", value=False)
-    avg_grid_o = st.number_input("橙色平均格数", min_value=0.0, value=1.0, step=0.01, disabled=not use_o)
-    use_p = st.checkbox("启用紫色平均格数", value=False)
-    avg_grid_p = st.number_input("紫色平均格数", min_value=0.0, value=1.0, step=0.01, disabled=not use_p)
-    use_b = st.checkbox("启用蓝色平均格数", value=False)
-    avg_grid_b = st.number_input("蓝色平均格数", min_value=0.0, value=1.0, step=0.01, disabled=not use_b)
+    avg_col_o, avg_col_p, avg_col_b = st.columns(3)
+    with avg_col_o:
+        use_o = st.checkbox("启用橙色平均格数", value=False)
+        avg_grid_o = st.number_input("橙色平均格数", min_value=0.0, value=1.0, step=0.01, disabled=not use_o)
+    with avg_col_p:
+        use_p = st.checkbox("启用紫色平均格数", value=False)
+        avg_grid_p = st.number_input("紫色平均格数", min_value=0.0, value=1.0, step=0.01, disabled=not use_p)
+    with avg_col_b:
+        use_b = st.checkbox("启用蓝色平均格数", value=False)
+        avg_grid_b = st.number_input("蓝色平均格数", min_value=0.0, value=1.0, step=0.01, disabled=not use_b)
+
     avg_grid_half_tolerance = st.number_input(
         "平均格数容差(±)",
         min_value=0.001,
         max_value=0.2,
-        value=0.05,
+        value=0.2,
         step=0.001,
     )
 
     st.markdown("### 添加附加线索")
-    clue_type = st.selectbox("线索类型", ["等级下限", "等级上限", "等级精确个数", "等级均价", "等级总格数(背包)", "藏品占用总格数"])
-    clue_grade = st.selectbox("等级", [1, 2, 3, 4, 5, 6], format_func=_grade_name)
-    clue_value = st.number_input("线索值", min_value=0.0, value=1.0, step=1.0)
+    clue_col_1, clue_col_2, clue_col_3 = st.columns([2, 1, 1])
+    with clue_col_1:
+        clue_type = st.selectbox("线索类型", ["等级下限", "等级上限", "等级精确个数", "等级均价", "等级总格数(背包)", "藏品占用总格数"])
+    with clue_col_2:
+        clue_grade = st.selectbox("等级", [1, 2, 3, 4, 5, 6], format_func=_grade_name)
+    with clue_col_3:
+        clue_value = st.number_input("线索值", min_value=0.0, value=1.0, step=1.0)
+
     use_override_count = st.checkbox("均价线索指定件数", value=False, disabled=clue_type != "等级均价")
     override_count = st.number_input("指定件数", min_value=1, value=1, step=1, disabled=(clue_type != "等级均价" or not use_override_count))
     exact_reachable = st.checkbox("启用精确可达过滤(较慢)", value=False, disabled=clue_type != "等级均价")
@@ -101,6 +125,7 @@ with st.sidebar:
         disabled=(clue_type != "等级总格数(背包)" or bool(auto_grid_sizes)),
     )
     st.caption("说明: 轮廓候选等级线索已暂时冻结，请改用“等级精确个数”。")
+
     if st.button("添加线索", use_container_width=True):
         if clue_type == "等级下限":
             st.session_state.min_count_clues.append({"grade": int(clue_grade), "value": int(clue_value)})
@@ -137,7 +162,17 @@ with st.sidebar:
         elif clue_type == "藏品占用总格数":
             st.session_state.global_grid_total_clues.append({"value": int(clue_value)})
 
+with main_right:
     st.markdown("### 当前线索")
+    if st.button("重置本局", use_container_width=True):
+        st.session_state.min_count_clues = []
+        st.session_state.max_count_clues = []
+        st.session_state.exact_count_clues = []
+        st.session_state.price_avg_clues = []
+        st.session_state.grid_total_clues = []
+        st.session_state.global_grid_total_clues = []
+        st.rerun()
+
     for idx, clue in enumerate(st.session_state.min_count_clues):
         c1, c2 = st.columns([6, 1])
         c1.caption(f"{_grade_name(clue['grade'])}色下限 >= {clue['value']}")
@@ -192,112 +227,133 @@ with st.sidebar:
             st.session_state.exact_count_clues.pop(idx)
             st.rerun()
 
-    if st.button("重置本局", use_container_width=True):
-        st.session_state.min_count_clues = []
-        st.session_state.max_count_clues = []
-        st.session_state.exact_count_clues = []
-        st.session_state.price_avg_clues = []
-        st.session_state.grid_total_clues = []
-        st.session_state.global_grid_total_clues = []
-        st.rerun()
-
     st.markdown("### 模拟参数")
-    sim_col_common, sim_col_advanced = st.columns(2)
-    with sim_col_common:
-        st.caption("常用参数")
-        num_samples = st.number_input("每个组合采样次数", min_value=1000, max_value=50000, value=10000, step=1000)
-        safe_bid_confidence_pct = st.number_input(
-            "Safe_Bid 置信度(%)",
-            min_value=50,
+    num_samples = st.number_input("每个组合采样次数", min_value=1000, max_value=50000, value=1000, step=1000)
+    safe_bid_confidence_pct = st.number_input(
+        "Safe_Bid 置信度(%)",
+        min_value=50,
+        max_value=99,
+        value=95,
+        step=1,
+    )
+    safe_bid_mode_label = st.selectbox(
+        "Safe_Bid_95 计算模式",
+        ["等权(推荐先用)", "先验加权(32:32:16:8:2:1)"],
+        index=0,
+    )
+    with st.expander("红/橙高级配置（可选）", expanded=False):
+        filter_extreme_red = st.checkbox("过滤极端高价红色样本", value=True)
+        red_extreme_percentile = st.number_input(
+            "红色高价阈值分位(%)",
+            min_value=80,
             max_value=99,
             value=95,
             step=1,
+            disabled=not filter_extreme_red,
         )
-        safe_bid_mode_label = st.selectbox(
-            "Safe_Bid_95 计算模式",
-            ["等权(推荐先用)", "先验加权(32:32:16:8:2:1)"],
-            index=0,
+        max_red_extreme_count = st.number_input(
+            "单箱高价红色最多件数",
+            min_value=0,
+            max_value=10,
+            value=1,
+            step=1,
+            disabled=not filter_extreme_red,
+        )
+        filter_extreme_orange = st.checkbox("过滤极端高价橙色样本", value=True)
+        orange_extreme_percentile = st.number_input(
+            "橙色高价阈值分位(%)",
+            min_value=80,
+            max_value=99,
+            value=95,
+            step=1,
+            disabled=not filter_extreme_orange,
+        )
+        max_orange_extreme_count = st.number_input(
+            "单箱高价橙色最多件数",
+            min_value=0,
+            max_value=20,
+            value=2,
+            step=1,
+            disabled=not filter_extreme_orange,
+        )
+        use_count_dependency = st.checkbox("启用红/橙数量依赖抑制", value=True)
+        red_additional_decay = st.number_input(
+            "第二个及以上红色衰减系数",
+            min_value=0.01,
+            max_value=1.0,
+            value=0.25,
+            step=0.01,
+            disabled=not use_count_dependency,
+        )
+        orange_additional_decay = st.number_input(
+            "第二个及以上橙色衰减系数",
+            min_value=0.01,
+            max_value=1.0,
+            value=0.50,
+            step=0.01,
+            disabled=not use_count_dependency,
+        )
+        max_red_count = st.number_input(
+            "单箱红色数量上限(-1表示不限)",
+            min_value=-1,
+            max_value=20,
+            value=-1,
+            step=1,
+            disabled=not use_count_dependency,
+        )
+        max_orange_count = st.number_input(
+            "单箱橙色数量上限(-1表示不限)",
+            min_value=-1,
+            max_value=30,
+            value=-1,
+            step=1,
+            disabled=not use_count_dependency,
         )
 
-    with sim_col_advanced:
-        with st.expander("红/橙高级配置（可选）", expanded=False):
-            filter_extreme_red = st.checkbox("过滤极端高价红色样本", value=True)
-            red_extreme_percentile = st.number_input(
-                "红色高价阈值分位(%)",
-                min_value=80,
-                max_value=99,
-                value=95,
-                step=1,
-                disabled=not filter_extreme_red,
-            )
-            max_red_extreme_count = st.number_input(
-                "单箱高价红色最多件数",
-                min_value=0,
-                max_value=10,
-                value=1,
-                step=1,
-                disabled=not filter_extreme_red,
-            )
-            filter_extreme_orange = st.checkbox("过滤极端高价橙色样本", value=True)
-            orange_extreme_percentile = st.number_input(
-                "橙色高价阈值分位(%)",
-                min_value=80,
-                max_value=99,
-                value=95,
-                step=1,
-                disabled=not filter_extreme_orange,
-            )
-            max_orange_extreme_count = st.number_input(
-                "单箱高价橙色最多件数",
-                min_value=0,
-                max_value=20,
-                value=2,
-                step=1,
-                disabled=not filter_extreme_orange,
-            )
-            use_count_dependency = st.checkbox("启用红/橙数量依赖抑制", value=True)
-            red_additional_decay = st.number_input(
-                "第二个及以上红色衰减系数",
-                min_value=0.01,
-                max_value=1.0,
-                value=0.25,
-                step=0.01,
-                disabled=not use_count_dependency,
-            )
-            orange_additional_decay = st.number_input(
-                "第二个及以上橙色衰减系数",
-                min_value=0.01,
-                max_value=1.0,
-                value=0.50,
-                step=0.01,
-                disabled=not use_count_dependency,
-            )
-            max_red_count = st.number_input(
-                "单箱红色数量上限(-1表示不限)",
-                min_value=-1,
-                max_value=20,
-                value=-1,
-                step=1,
-                disabled=not use_count_dependency,
-            )
-            max_orange_count = st.number_input(
-                "单箱橙色数量上限(-1表示不限)",
-                min_value=-1,
-                max_value=30,
-                value=-1,
-                step=1,
-                disabled=not use_count_dependency,
-            )
-    run_btn = st.button("开始估值", type="primary", use_container_width=True)
+action_col_1, action_col_2 = st.columns(2)
+with action_col_1:
+    run_btn = st.button(
+        "开始估值",
+        type="primary",
+        use_container_width=True,
+        disabled=st.session_state.calc_running,
+    )
+with action_col_2:
+    cancel_btn = st.button(
+        "终止计算",
+        type="secondary",
+        use_container_width=True,
+        disabled=not st.session_state.calc_running,
+    )
+
+if cancel_btn:
+    st.session_state.calc_cancel_requested = True
+    st.warning("已请求终止计算，系统会在当前采样批次结束后尽快停止。")
 
 
 if run_btn:
+    st.session_state.calc_running = True
+    st.session_state.calc_cancel_requested = False
+    progress_box = st.container()
+    with progress_box:
+        st.markdown("### 计算进度")
+        progress_text = st.empty()
+        progress_bar = st.progress(0, text="准备开始...")
+        progress_detail = st.empty()
+
+    total_start_ts = time.perf_counter()
+    progress_text.info("阶段 1/3: 加载数据")
+    progress_bar.progress(5, text="阶段 1/3: 加载数据")
     try:
         pools = get_price_pools(data_dir)
     except Exception as exc:
         st.error(f"数据加载失败: {exc}")
         st.stop()
+    progress_bar.progress(20, text="阶段 1/3: 数据加载完成")
+    progress_detail.caption("已完成数据读取，正在整理线索约束。")
 
+    progress_text.info("阶段 2/3: 求解合法组合")
+    constraints_start_ts = time.perf_counter()
     min_count_by_grade = {}
     for clue in st.session_state.min_count_clues:
         grade = int(clue["grade"])
@@ -365,14 +421,45 @@ if run_btn:
     )
 
     valid_combinations = solve_valid_combinations(constraints, pools)
+    constraints_elapsed = time.perf_counter() - constraints_start_ts
+    progress_bar.progress(55, text="阶段 2/3: 合法组合求解完成")
+    progress_detail.caption(
+        f"合法组合数量: {len(valid_combinations)}，耗时: {constraints_elapsed:.2f}s。"
+    )
     st.info(f"当前可能组合数量: {len(valid_combinations)}")
 
     if not valid_combinations:
         st.warning("未找到合法组合。请检查线索是否矛盾或输入有误。")
         st.stop()
 
-    with st.spinner("正在进行蒙特卡洛估值..."):
-        safe_bid_mode = "equal" if safe_bid_mode_label.startswith("等权") else "prior"
+    progress_text.info("阶段 3/3: 蒙特卡洛估值")
+    monte_start_ts = time.perf_counter()
+    last_progress_update = {"ts": 0.0}
+    cancelled = False
+
+    def _on_mc_progress(done: int, total: int) -> bool:
+        if st.session_state.get("calc_cancel_requested", False):
+            progress_text.warning("正在终止计算...")
+            progress_detail.caption("已收到终止请求，正在安全停止。")
+            return False
+        now = time.perf_counter()
+        if done not in (0, total) and now - last_progress_update["ts"] < 0.2:
+            return True
+        last_progress_update["ts"] = now
+        ratio = (done / total) if total > 0 else 1.0
+        pct = 55 + int(ratio * 40)
+        pct = max(55, min(95, pct))
+        progress_bar.progress(
+            pct,
+            text=f"阶段 3/3: 蒙特卡洛估值 ({done}/{total} 组合)",
+        )
+        progress_detail.caption(
+            f"采样中: 已完成 {done}/{total} 个组合，每组合 {int(num_samples)} 次。"
+        )
+        return True
+
+    safe_bid_mode = "equal" if safe_bid_mode_label.startswith("等权") else "prior"
+    try:
         result = run_monte_carlo(
             combinations=valid_combinations,
             price_pools=pools,
@@ -390,7 +477,28 @@ if run_btn:
             orange_additional_decay=float(orange_additional_decay),
             max_red_count=int(max_red_count),
             max_orange_count=int(max_orange_count),
+            progress_callback=_on_mc_progress,
         )
+    except CalculationCancelledError:
+        cancelled = True
+        progress_bar.progress(100, text="计算已终止")
+        progress_text.warning("本次计算已终止")
+        progress_detail.caption("你可以调整参数后再次点击“开始估值”。")
+    finally:
+        st.session_state.calc_running = False
+        st.session_state.calc_cancel_requested = False
+
+    if cancelled:
+        st.info("本次估值已取消，可直接重新开始。")
+        st.stop()
+
+    monte_elapsed = time.perf_counter() - monte_start_ts
+    total_elapsed = time.perf_counter() - total_start_ts
+    progress_text.success("计算完成")
+    progress_bar.progress(100, text="全部阶段完成")
+    progress_detail.caption(
+        f"阶段耗时: 组合求解 {constraints_elapsed:.2f}s，蒙特卡洛 {monte_elapsed:.2f}s，总计 {total_elapsed:.2f}s。"
+    )
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Expected_Value", f"{result.expected_value:,.2f}")
@@ -430,4 +538,4 @@ if run_btn:
 
     st.success("估值计算完成")
 else:
-    st.caption("请在左侧输入线索并点击“开始估值”。")
+    st.caption("请在上方主区域输入线索并点击“开始估值”。")

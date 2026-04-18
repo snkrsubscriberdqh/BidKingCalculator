@@ -1,9 +1,13 @@
 import math
-from typing import Dict, List
+from typing import Callable, Dict, List
 
 import numpy as np
 
 from .models import CountCombination, SimulationResult
+
+
+class CalculationCancelledError(RuntimeError):
+    pass
 
 
 GRADE_PRIOR = {1: 32, 2: 32, 3: 16, 4: 8, 5: 2, 6: 1}
@@ -57,6 +61,8 @@ def run_monte_carlo(
     orange_additional_decay: float = 0.5,
     max_red_count: int = -1,
     max_orange_count: int = -1,
+    progress_callback: Callable[[int, int], bool | None] | None = None,
+    progress_every: int = 20,
 ) -> SimulationResult:
     if not combinations:
         raise ValueError("无合法组合，无法进行模拟")
@@ -120,7 +126,12 @@ def run_monte_carlo(
 
     equal_combo_weight = 1.0 / len(combinations)
     tail_quantile = (100.0 - float(safe_bid_confidence_pct)) / 100.0
-    for combo, w in zip(combinations, combo_weights):
+    total_combos = len(combinations)
+    if progress_callback is not None:
+        should_continue = progress_callback(0, total_combos)
+        if should_continue is False:
+            raise CalculationCancelledError("用户已终止计算")
+    for idx, (combo, w) in enumerate(zip(combinations, combo_weights), start=1):
         totals = np.zeros(num_samples, dtype=np.int64)
         by_grade = combo.by_grade()
         theoretical_max = 0
@@ -164,6 +175,15 @@ def run_monte_carlo(
         all_weights.append(
             np.full(totals_used.size, quantile_combo_weight / totals_used.size, dtype=np.float64)
         )
+        should_emit = (
+            idx == 1
+            or idx == total_combos
+            or idx % max(1, int(progress_every)) == 0
+        )
+        if progress_callback is not None and should_emit:
+            should_continue = progress_callback(idx, total_combos)
+            if should_continue is False:
+                raise CalculationCancelledError("用户已终止计算")
 
     all_values_arr = np.concatenate(all_values)
     all_weights_arr = np.concatenate(all_weights)
